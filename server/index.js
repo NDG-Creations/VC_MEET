@@ -50,7 +50,8 @@ function createParticipant(socket, name, role) {
     role,
     micOn: true,
     cameraOn: true,
-    canShareScreen: role !== "user"
+    canShareScreen: role !== "user",
+    raisedHand: false
   };
 }
 
@@ -59,6 +60,9 @@ function getRoom(roomId) {
     rooms.set(roomId, {
       locked: false,
       password: "",
+      chatEnabled: true,
+      participantScreenShareEnabled: true,
+      activeShareSocketId: null,
       participants: new Map(),
       pendingRequests: new Map()
     });
@@ -73,7 +77,8 @@ function serializeParticipant(participant) {
     role: participant.role,
     micOn: participant.micOn,
     cameraOn: participant.cameraOn,
-    canShareScreen: participant.canShareScreen
+    canShareScreen: participant.canShareScreen,
+    raisedHand: participant.raisedHand
   };
 }
 
@@ -92,7 +97,17 @@ function broadcastParticipants(roomId) {
   io.to(roomId).emit("participants-updated", {
     participants: serializeParticipants(room),
     locked: room.locked,
-    pendingRequests: serializePending(room)
+    pendingRequests: serializePending(room),
+    chatEnabled: room.chatEnabled,
+    participantScreenShareEnabled: room.participantScreenShareEnabled
+  });
+}
+
+function emitSystemMessage(roomId, message) {
+  io.to(roomId).emit("system-message", {
+    id: randomUUID(),
+    message,
+    timestamp: new Date().toISOString()
   });
 }
 
@@ -183,7 +198,12 @@ io.on("connection", (socket) => {
   socket.on("chat-message", ({ roomId, message, name, timestamp, clientMessageId }) => {
     if (!roomId || !message) return;
     const room = rooms.get(roomId);
-    if (!room?.participants.has(socket.id)) return;
+    const participant = room?.participants.get(socket.id);
+    if (!participant) return;
+    if (!room.chatEnabled && !["organizer", "admin"].includes(participant.role)) {
+      socket.emit("chat-disabled", { message: "Chat is disabled by the organizer." });
+      return;
+    }
 
     const messageData = {
       id: randomUUID(),
@@ -211,6 +231,30 @@ io.on("connection", (socket) => {
     if (!roomId || !room || participant?.role !== "organizer") return;
 
     room.locked = Boolean(locked);
+    emitSystemMessage(roomId, room.locked ? "Meeting locked." : "Meeting unlocked.");
+    broadcastParticipants(roomId);
+  });
+
+  socket.on("set-chat-enabled", ({ enabled }) => {
+    const { roomId, room, participant } = getActor(socket);
+    if (!roomId || !room || participant?.role !== "organizer") return;
+
+    room.chatEnabled = Boolean(enabled);
+    emitSystemMessage(roomId, room.chatEnabled ? "Chat enabled." : "Chat disabled.");
+    broadcastParticipants(roomId);
+  });
+
+  socket.on("set-room-screen-share-enabled", ({ enabled }) => {
+    const { roomId, room, participant } = getActor(socket);
+    if (!roomId || !room || participant?.role !== "organizer") return;
+
+    room.participantScreenShareEnabled = Boolean(enabled);
+    emitSystemMessage(
+      roomId,
+      room.participantScreenShareEnabled
+        ? "Participant screen sharing enabled."
+        : "Participant screen sharing disabled."
+    );
     broadcastParticipants(roomId);
   });
 
@@ -285,6 +329,19 @@ io.on("connection", (socket) => {
     broadcastParticipants(roomId);
   });
 
+  socket.on("mute-all", () => {
+    const { roomId, room, participant } = getActor(socket);
+    if (!roomId || !room || participant?.role !== "organizer") return;
+
+    room.participants.forEach((targetParticipant) => {
+      if (targetParticipant.id === socket.id) return;
+      targetParticipant.micOn = false;
+      io.to(targetParticipant.id).emit("force-mute");
+    });
+    emitSystemMessage(roomId, "Organizer muted all participants.");
+    broadcastParticipants(roomId);
+  });
+
   socket.on("remove-participant", ({ target }) => {
     const { roomId, room, participant } = getActor(socket);
     const targetParticipant = room?.participants.get(target);
@@ -293,6 +350,55 @@ io.on("connection", (socket) => {
     io.to(target).emit("removed-from-room", { reason: "You were removed from the meeting." });
     const targetSocket = io.sockets.sockets.get(target);
     targetSocket?.disconnect(true);
+  });
+
+  socket.on("reaction", ({ reaction }) => {
+    const { roomId, room, participant } = getActor(socket);
+    if (!roomId || !room || !participant) return;
+    const allowed = ["👍", "❤️", "😂", "👏", "🎉", "🔥"];
+    if (!allowed.includes(reaction)) return;
+
+    io.to(roomId).emit("reaction", {
+      id: randomUUID(),
+      socketId: socket.id,
+      name: participant.name,
+      reaction,
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  socket.on("raise-hand", ({ raised }) => {
+    const { roomId, room, participant } = getActor(socket);
+    if (!roomId || !room || !participant) return;
+
+    participant.raisedHand = Boolean(raised);
+    emitSystemMessage(roomId, `${participant.name} ${participant.raisedHand ? "raised" : "lowered"} their hand.`);
+    broadcastParticipants(roomId);
+  });
+
+  socket.on("screen-share-started", () => {
+    const { roomId, room, participant } = getActor(socket);
+    if (!roomId || !room || !participant) return;
+    if (participant.role === "user" && !room.participantScreenShareEnabled) {
+      socket.emit("screen-share-denied", { message: "Participant screen sharing is disabled." });
+      return;
+    }
+
+    if (room.activeShareSocketId && room.activeShareSocketId !== socket.id) {
+      io.to(room.activeShareSocketId).emit("force-stop-screen-share");
+    }
+    room.activeShareSocketId = socket.id;
+    emitSystemMessage(roomId, `${participant.name} started screen sharing.`);
+  });
+
+  socket.on("screen-share-stopped", () => {
+    const { roomId, room, participant } = getActor(socket);
+    if (!roomId || !room || !participant) return;
+
+    if (room.activeShareSocketId === socket.id) {
+      room.activeShareSocketId = null;
+      emitSystemMessage(roomId, `${participant.name} stopped screen sharing.`);
+    }
   });
 
   socket.on("end-meeting", () => {
@@ -337,6 +443,13 @@ io.on("connection", (socket) => {
     const participant = room.participants.get(socket.id);
     room.participants.delete(socket.id);
     socket.to(roomId).emit("user-disconnected", socket.id);
+    if (participant) {
+      emitSystemMessage(roomId, `${participant.name} left.`);
+    }
+    if (room.activeShareSocketId === socket.id) {
+      room.activeShareSocketId = null;
+      emitSystemMessage(roomId, "Screen sharing stopped.");
+    }
 
     if (participant?.role === "organizer" && room.participants.size > 0) {
       const nextOrganizer = room.participants.values().next().value;
@@ -375,6 +488,8 @@ function joinUnlockedRoom(socket, roomId, name) {
     role,
     locked: room.locked,
     canShareScreen: participant.canShareScreen,
+    chatEnabled: room.chatEnabled,
+    participantScreenShareEnabled: room.participantScreenShareEnabled,
     participants: serializeParticipants(room),
     pendingRequests: serializePending(room)
   });
@@ -385,6 +500,7 @@ function joinUnlockedRoom(socket, roomId, name) {
     role
   });
 
+  emitSystemMessage(roomId, `${name} joined.`);
   broadcastParticipants(roomId);
 }
 

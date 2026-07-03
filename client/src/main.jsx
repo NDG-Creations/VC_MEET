@@ -7,6 +7,7 @@ import {
   Clipboard,
   Copy,
   Crown,
+  Hand,
   KeyRound,
   Link as LinkIcon,
   LoaderCircle,
@@ -16,14 +17,19 @@ import {
   Mic,
   MicOff,
   MonitorUp,
+  MoreHorizontal,
   Phone,
   Power,
   Send,
   Shield,
   ShieldMinus,
+  Smile,
   UserCheck,
   UserMinus,
-  Users
+  Users,
+  MessageCircle,
+  Wifi,
+  VolumeX
 } from "lucide-react";
 import "./styles.css";
 
@@ -69,8 +75,31 @@ function formatTime(timestamp) {
   }).format(new Date(timestamp));
 }
 
+function formatDuration(totalSeconds) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours, minutes, seconds]
+    .filter((value, index) => index > 0 || value > 0)
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
 function createId() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+}
+
+function createBlackVideoTrack() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1280;
+  canvas.height = 720;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#050608";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const stream = canvas.captureStream(5);
+  const [track] = stream.getVideoTracks();
+  track.enabled = true;
+  return track;
 }
 
 function App() {
@@ -243,20 +272,41 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
   const [pendingRequests, setPendingRequests] = useState([]);
   const [isLocked, setIsLocked] = useState(false);
   const [canShareScreen, setCanShareScreen] = useState(false);
+  const [chatEnabled, setChatEnabled] = useState(true);
+  const [participantScreenShareEnabled, setParticipantScreenShareEnabled] = useState(true);
   const [remoteCameras, setRemoteCameras] = useState([]);
   const [activeShare, setActiveShare] = useState(null);
   const [viewMode, setViewMode] = useState("gallery");
+  const [activeMobilePanel, setActiveMobilePanel] = useState("");
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [floatingReactions, setFloatingReactions] = useState([]);
+  const [isHandRaised, setIsHandRaised] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isSharingScreen, setIsSharingScreen] = useState(false);
   const [mediaError, setMediaError] = useState("");
   const [roomNotice, setRoomNotice] = useState("");
+  const [meetingStartedAt] = useState(Date.now());
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [networkQuality] = useState("Excellent");
 
   const myParticipant = participants.find((participant) => participant.id === mySocketId);
   const canManageRoom = role === "organizer";
   const meetingLink = `${window.location.origin}/room/${roomId}`;
+  const activeSpeakerId =
+    participants.find((participant) => participant.micOn && participant.id !== mySocketId)?.id ||
+    (isMicOn ? mySocketId : "");
+  const effectiveCanShareScreen =
+    canShareScreen && (role !== "user" || participantScreenShareEnabled);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - meetingStartedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [meetingStartedAt]);
 
   useEffect(() => {
     micOnRef.current = isMicOn;
@@ -281,7 +331,18 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
     const socket = io(SIGNALING_SERVER);
     socketRef.current = socket;
 
-    socket.on("joined-room", ({ socketId, role, locked, participants, pendingRequests, canShareScreen }) => {
+    socket.on(
+      "joined-room",
+      ({
+        socketId,
+        role,
+        locked,
+        participants,
+        pendingRequests,
+        canShareScreen,
+        chatEnabled,
+        participantScreenShareEnabled
+      }) => {
       setIsJoining(false);
       setIsWaitingRoom(false);
       setJoinError("");
@@ -291,8 +352,11 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
       setParticipants(participants || []);
       setPendingRequests(pendingRequests || []);
       setCanShareScreen(Boolean(canShareScreen));
+      setChatEnabled(Boolean(chatEnabled));
+      setParticipantScreenShareEnabled(Boolean(participantScreenShareEnabled));
       setRoomNotice("");
-    });
+      }
+    );
 
     socket.on("waiting-room", () => {
       setIsJoining(false);
@@ -322,16 +386,22 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
       setHasJoined(false);
     });
 
-    socket.on("participants-updated", ({ participants, locked, pendingRequests }) => {
+    socket.on(
+      "participants-updated",
+      ({ participants, locked, pendingRequests, chatEnabled, participantScreenShareEnabled }) => {
       setParticipants(participants || []);
       setIsLocked(Boolean(locked));
       setPendingRequests(pendingRequests || []);
+      setChatEnabled(Boolean(chatEnabled));
+      setParticipantScreenShareEnabled(Boolean(participantScreenShareEnabled));
       const self = participants?.find((participant) => participant.id === socket.id);
       if (self) {
         setRole(self.role);
         setCanShareScreen(Boolean(self.canShareScreen));
+        setIsHandRaised(Boolean(self.raisedHand));
       }
-    });
+      }
+    );
 
     socket.on("pending-requests", (requests) => {
       setPendingRequests(requests || []);
@@ -351,6 +421,15 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
       if (audioTrack) audioTrack.enabled = false;
       setIsMicOn(false);
       socket.emit("participant-status", { micOn: false, cameraOn: cameraOnRef.current });
+    });
+
+    socket.on("force-stop-screen-share", () => {
+      stopLocalScreenShare();
+      setRoomNotice("Another participant started sharing. Your screen share was stopped.");
+    });
+
+    socket.on("screen-share-denied", ({ message }) => {
+      setRoomNotice(message || "Screen sharing is disabled.");
     });
 
     socket.on("removed-from-room", ({ reason }) => {
@@ -400,6 +479,34 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
 
     socket.on("chat-message", (message) => {
       setMessages((current) => upsertMessage(current, message));
+    });
+
+    socket.on("chat-disabled", ({ message }) => {
+      setRoomNotice(message || "Chat is disabled.");
+    });
+
+    socket.on("system-message", (message) => {
+      setMessages((current) => [
+        ...current,
+        {
+          id: message.id || createId(),
+          system: true,
+          message: message.message,
+          timestamp: message.timestamp || new Date().toISOString()
+        }
+      ]);
+    });
+
+    socket.on("reaction", (reaction) => {
+      const item = {
+        ...reaction,
+        id: reaction.id || createId(),
+        left: 12 + Math.random() * 76
+      };
+      setFloatingReactions((current) => [...current, item]);
+      window.setTimeout(() => {
+        setFloatingReactions((current) => current.filter((existing) => existing.id !== item.id));
+      }, 3000);
     });
 
     async function startMeeting() {
@@ -564,13 +671,63 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
   }
 
   function toggleCamera() {
-    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
-    if (!videoTrack) return;
-    videoTrack.enabled = !videoTrack.enabled;
-    setIsCameraOn(videoTrack.enabled);
+    if (isCameraOn) {
+      const blackTrack = createBlackVideoTrack();
+      replaceCameraTrack(blackTrack, { stopPrevious: true });
+      setIsCameraOn(false);
+      socketRef.current?.emit("participant-status", {
+        micOn: micOnRef.current,
+        cameraOn: false
+      });
+      return;
+    }
+
+    navigator.mediaDevices
+      .getUserMedia({ video: true })
+      .then((stream) => {
+        const [videoTrack] = stream.getVideoTracks();
+        replaceCameraTrack(videoTrack, { stopPrevious: true });
+        setIsCameraOn(true);
+        socketRef.current?.emit("participant-status", {
+          micOn: micOnRef.current,
+          cameraOn: true
+        });
+      })
+      .catch((error) => {
+        setMediaError("Camera could not be restarted. Check browser permissions and try again.");
+        console.error(error);
+      });
+  }
+
+  function replaceCameraTrack(nextTrack, { stopPrevious = false } = {}) {
+    const stream = localStreamRef.current;
+    const previousTrack = stream?.getVideoTracks()[0];
+
+    if (stream) {
+      if (previousTrack) stream.removeTrack(previousTrack);
+      stream.addTrack(nextTrack);
+    }
+
+    if (localVideoRef.current && stream) {
+      localVideoRef.current.srcObject = stream;
+    }
+
+    peersRef.current.forEach((peer) => {
+      const sender = peer
+        .getSenders()
+        .find((item) => item.track?.kind === "video" && ![...screenSendersRef.current.values()].includes(item));
+      sender?.replaceTrack(nextTrack);
+    });
+
+    if (stopPrevious && previousTrack && previousTrack !== nextTrack) {
+      previousTrack.stop();
+    }
+  }
+
+  function broadcastCameraStatus(cameraOn) {
     socketRef.current?.emit("participant-status", {
       micOn: micOnRef.current,
-      cameraOn: videoTrack.enabled
+      cameraOn
     });
   }
 
@@ -601,6 +758,8 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
     screenSendersRef.current.clear();
     setIsSharingScreen(false);
     setActiveShare((current) => (current?.isLocal ? null : current));
+    setViewMode("gallery");
+    socketRef.current?.emit("screen-share-stopped");
 
     if (renegotiate) {
       await renegotiateAllPeers();
@@ -631,7 +790,7 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
   }
 
   async function toggleScreenShare() {
-    if (!canShareScreen) {
+    if (!effectiveCanShareScreen) {
       setRoomNotice("Screen sharing is not enabled for your role.");
       return;
     }
@@ -642,6 +801,11 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
     }
 
     try {
+      const shouldShare = window.confirm(
+        "Do not share the MeetConnect tab/window. Share another tab, app, or monitor to avoid mirror effect."
+      );
+      if (!shouldShare) return;
+
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
       const screenTrack = screenStream.getVideoTracks()[0];
       screenStreamRef.current = screenStream;
@@ -656,6 +820,7 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
         const sender = peer.addTrack(screenTrack, screenStream);
         screenSendersRef.current.set(target, sender);
       });
+      socketRef.current?.emit("screen-share-started");
       await renegotiateAllPeers();
 
       screenTrack.onended = () => {
@@ -674,6 +839,10 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
     if (!message) return;
     if (!mySocketId) {
       setRoomNotice("You can chat after you are admitted to the meeting.");
+      return;
+    }
+    if (!chatEnabled && !["organizer", "admin"].includes(role)) {
+      setRoomNotice("Chat is disabled by the organizer.");
       return;
     }
 
@@ -697,6 +866,17 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
     setChatInput("");
   }
 
+  function sendReaction(reaction) {
+    socketRef.current?.emit("reaction", { reaction });
+    setShowEmojiPicker(false);
+  }
+
+  function toggleRaiseHand() {
+    const nextRaised = !isHandRaised;
+    setIsHandRaised(nextRaised);
+    socketRef.current?.emit("raise-hand", { raised: nextRaised });
+  }
+
   function leaveMeeting() {
     stopAllMedia();
     socketRef.current?.disconnect();
@@ -718,6 +898,18 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
 
   function setRoomLock(locked) {
     socketRef.current?.emit("set-lock", { locked });
+  }
+
+  function setChatRoomEnabled(enabled) {
+    socketRef.current?.emit("set-chat-enabled", { enabled });
+  }
+
+  function setParticipantScreenSharing(enabled) {
+    socketRef.current?.emit("set-room-screen-share-enabled", { enabled });
+  }
+
+  function muteAllParticipants() {
+    socketRef.current?.emit("mute-all");
   }
 
   function allowUser(socketId) {
@@ -846,6 +1038,11 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
             <strong>{roomId}</strong>
           </div>
           <div className="meeting-status">
+            <span className="meeting-timer">{formatDuration(elapsedSeconds)}</span>
+            <span className={`network-pill ${networkQuality.toLowerCase()}`}>
+              <Wifi size={15} />
+              {networkQuality}
+            </span>
             <button className="header-action" type="button" onClick={copyMeetingLink} title="Copy meeting link">
               {copiedMeetingLink ? <Clipboard size={17} /> : <LinkIcon size={17} />}
               <span>{copiedMeetingLink ? "Copied" : "Copy Link"}</span>
@@ -871,6 +1068,14 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
 
         {mediaError && <div className="media-error">{mediaError}</div>}
         {roomNotice && <div className="room-notice">{roomNotice}</div>}
+        <div className="echo-warning">Use headphones or mute one device to avoid echo.</div>
+        <div className="floating-reactions" aria-live="polite">
+          {floatingReactions.map((item) => (
+            <span key={item.id} style={{ left: `${item.left}%` }}>
+              {item.reaction}
+            </span>
+          ))}
+        </div>
 
         <div className="view-toggle" aria-label="Meeting view">
           <button
@@ -897,8 +1102,10 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
               streamRef={localVideoRef}
               muted
               role={myParticipant?.role || role}
+              raisedHand={isHandRaised}
               compact={Boolean(activeShare)}
               featured={!activeShare && viewMode === "speaker"}
+              active={activeSpeakerId === mySocketId}
             />
             {remoteCameras.map(({ socketId, stream, name: remoteName }) => (
               <RemoteVideoTile
@@ -906,7 +1113,9 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
                 name={remoteName}
                 stream={stream}
                 role={participants.find((participant) => participant.id === socketId)?.role}
+                raisedHand={participants.find((participant) => participant.id === socketId)?.raisedHand}
                 compact={Boolean(activeShare)}
+                active={activeSpeakerId === socketId}
               />
             ))}
           </div>
@@ -924,11 +1133,54 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
           <button
             type="button"
             onClick={toggleScreenShare}
-            disabled={!canShareScreen}
-            title={canShareScreen ? "Share screen" : "Screen sharing is not allowed"}
+            disabled={!effectiveCanShareScreen}
+            title={effectiveCanShareScreen ? "Share screen" : "Screen sharing is not allowed"}
           >
             <MonitorUp size={22} />
             <span>{isSharingScreen ? "Stop Share" : "Share"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveMobilePanel(activeMobilePanel === "chat" ? "" : "chat")}
+            title="Chat"
+          >
+            <MessageCircle size={22} />
+            <span>Chat</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveMobilePanel(activeMobilePanel === "participants" ? "" : "participants")}
+            title="Participants"
+          >
+            <Users size={22} />
+            <span>People</span>
+          </button>
+          <button type="button" onClick={toggleRaiseHand} title={isHandRaised ? "Lower hand" : "Raise hand"}>
+            <Hand size={22} />
+            <span>{isHandRaised ? "Lower" : "Raise"}</span>
+          </button>
+          <div className="reaction-control">
+            <button type="button" onClick={() => setShowEmojiPicker((current) => !current)} title="Reactions">
+              <Smile size={22} />
+              <span>React</span>
+            </button>
+            {showEmojiPicker && (
+              <div className="reaction-picker">
+                {["👍", "❤️", "😂", "👏", "🎉", "🔥"].map((reaction) => (
+                  <button type="button" key={reaction} onClick={() => sendReaction(reaction)}>
+                    {reaction}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveMobilePanel(activeMobilePanel === "more" ? "" : "more")}
+            title="More"
+          >
+            <MoreHorizontal size={22} />
+            <span>More</span>
           </button>
           <button className="leave-button" type="button" onClick={leaveMeeting} title="Leave meeting">
             <LogOut size={22} />
@@ -937,7 +1189,7 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
         </div>
       </section>
 
-      <aside className="side-panel">
+      <aside className={`side-panel ${activeMobilePanel ? "open" : ""} ${activeMobilePanel}`}>
         <section className="participants-panel">
           <header>
             <h2>Participants</h2>
@@ -952,6 +1204,21 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
               </button>
             )}
           </header>
+
+          {canManageRoom && (
+            <div className="organizer-controls">
+              <button type="button" onClick={muteAllParticipants}>
+                <VolumeX size={15} />
+                Mute All
+              </button>
+              <button type="button" onClick={() => setChatRoomEnabled(!chatEnabled)}>
+                {chatEnabled ? "Disable Chat" : "Enable Chat"}
+              </button>
+              <button type="button" onClick={() => setParticipantScreenSharing(!participantScreenShareEnabled)}>
+                {participantScreenShareEnabled ? "Disable Share" : "Enable Share"}
+              </button>
+            </div>
+          )}
 
           {pendingRequests.length > 0 && canManageRoom && (
             <div className="waiting-list">
@@ -995,10 +1262,15 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
             {messages.length === 0 ? (
               <p className="empty-chat">No messages yet.</p>
             ) : (
-              messages.map((item) => (
-                <article key={item.id} className={item.socketId === socketRef.current?.id ? "own-message" : ""}>
+            messages.map((item) => (
+                <article
+                  key={item.id}
+                  className={`${item.socketId === socketRef.current?.id ? "own-message" : ""} ${
+                    item.system ? "system-message" : ""
+                  }`}
+                >
                   <div className="message-meta">
-                    <strong>{item.name}</strong>
+                    <strong>{item.system ? "MeetConnect" : item.name}</strong>
                     <time>{formatTime(item.timestamp)}</time>
                   </div>
                   <p>{item.message}</p>
@@ -1010,9 +1282,13 @@ function MeetingRoom({ roomId, initialName, initialPassword }) {
             <input
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
-              placeholder="Type a message"
+              placeholder={chatEnabled ? "Type a message" : "Chat disabled"}
               aria-label="Chat message"
+              disabled={!chatEnabled && !["organizer", "admin"].includes(role)}
             />
+            <button type="button" title="Add emoji" onClick={() => setChatInput((current) => `${current} 🙂`)}>
+              <Smile size={18} />
+            </button>
             <button type="submit" title="Send message">
               <Send size={18} />
             </button>
@@ -1040,7 +1316,10 @@ function ParticipantRow({
   return (
     <article className="participant-row">
       <div className="participant-main">
-        <span className="participant-name">{participant.name}{isSelf ? " (You)" : ""}</span>
+        <span className="participant-name">
+          {participant.raisedHand ? "✋ " : ""}
+          {participant.name}{isSelf ? " (You)" : ""}
+        </span>
         <span className={`role-badge ${participant.role}`}>
           {participant.role === "organizer" && <Crown size={13} />}
           {participant.role === "admin" && <Shield size={13} />}
@@ -1097,11 +1376,24 @@ function ScreenSharePanel({ share }) {
   );
 }
 
-function VideoTile({ label, streamRef, muted = false, role, compact = false, featured = false }) {
+function VideoTile({
+  label,
+  streamRef,
+  muted = false,
+  role,
+  raisedHand = false,
+  compact = false,
+  featured = false,
+  active = false
+}) {
   return (
-    <article className={`video-tile ${compact ? "compact" : ""} ${featured ? "featured" : ""}`}>
+    <article
+      className={`video-tile ${compact ? "compact" : ""} ${featured ? "featured" : ""} ${
+        active ? "active-speaker" : ""
+      }`}
+    >
       <video ref={streamRef} autoPlay playsInline muted={muted} />
-      <span>{label}{role ? ` - ${role}` : ""}</span>
+      <span>{raisedHand ? "✋ " : ""}{label}{role ? ` - ${role}` : ""}</span>
     </article>
   );
 }
@@ -1118,7 +1410,7 @@ function StreamVideo({ stream, muted = false, className = "" }) {
   return <video className={className} ref={videoRef} autoPlay playsInline muted={muted} />;
 }
 
-function RemoteVideoTile({ name, stream, role, compact = false }) {
+function RemoteVideoTile({ name, stream, role, raisedHand = false, compact = false, active = false }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
@@ -1127,7 +1419,16 @@ function RemoteVideoTile({ name, stream, role, compact = false }) {
     }
   }, [stream]);
 
-  return <VideoTile label={name} streamRef={videoRef} role={role} compact={compact} />;
+  return (
+    <VideoTile
+      label={name}
+      streamRef={videoRef}
+      role={role}
+      raisedHand={raisedHand}
+      compact={compact}
+      active={active}
+    />
+  );
 }
 
 createRoot(document.getElementById("root")).render(<App />);

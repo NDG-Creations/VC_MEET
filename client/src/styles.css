@@ -202,6 +202,7 @@ label {
 }
 
 .meeting-stage {
+  position: relative;
   min-width: 0;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
@@ -257,6 +258,43 @@ label {
   background: #1f332f;
   color: #d8fff2;
   padding: 12px 14px;
+}
+
+.echo-warning {
+  align-self: start;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: #2b2618;
+  color: #ffe6a1;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.meeting-timer,
+.network-pill {
+  min-height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1d2229;
+  color: #dbe3ee;
+  padding: 0 10px;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.network-pill.excellent {
+  color: #79e5c8;
+}
+
+.network-pill.good {
+  color: #ffe6a1;
+}
+
+.network-pill.poor {
+  color: #ffb0b8;
 }
 
 .view-toggle {
@@ -337,6 +375,11 @@ label {
     opacity 220ms ease,
     min-height 220ms ease,
     border-color 220ms ease;
+}
+
+.video-tile.active-speaker {
+  border-color: #38d996;
+  box-shadow: 0 0 0 2px rgba(56, 217, 150, 0.28);
 }
 
 .video-tile.featured {
@@ -445,6 +488,7 @@ label {
   flex-wrap: wrap;
   gap: 10px;
   padding-top: 14px;
+  position: relative;
 }
 
 .control-bar button {
@@ -472,6 +516,62 @@ label {
 
 .control-bar .leave-button {
   background: #d93447;
+}
+
+.reaction-control {
+  position: relative;
+}
+
+.reaction-picker {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
+  z-index: 20;
+  border-radius: 8px;
+  display: flex;
+  gap: 6px;
+  background: #20262e;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  padding: 8px;
+}
+
+.reaction-picker button {
+  min-width: 38px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  background: #303845;
+  font-size: 1.2rem;
+}
+
+.floating-reactions {
+  pointer-events: none;
+  position: absolute;
+  inset: 80px 360px 90px 18px;
+  z-index: 15;
+  overflow: hidden;
+}
+
+.floating-reactions span {
+  position: absolute;
+  bottom: 0;
+  font-size: 2.4rem;
+  animation: floatReaction 3s ease-out forwards;
+}
+
+@keyframes floatReaction {
+  from {
+    opacity: 0;
+    transform: translateY(0) scale(0.9);
+  }
+  15% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-220px) scale(1.35);
+  }
 }
 
 .meeting-status {
@@ -587,6 +687,28 @@ label {
   align-content: start;
   gap: 10px;
   padding: 14px;
+}
+
+.organizer-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 14px 0;
+}
+
+.organizer-controls button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #242a33;
+  color: #f7f7f8;
+  padding: 0 8px;
+  font-size: 0.76rem;
+  font-weight: 900;
 }
 
 .participant-row {
@@ -705,6 +827,11 @@ label {
   background: #153d35;
 }
 
+.messages article.system-message {
+  background: #262a31;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+}
+
 .messages strong {
   color: #9ee6d0;
   font-size: 0.82rem;
@@ -736,7 +863,7 @@ label {
 }
 
 .chat-form {
-  grid-template-columns: 1fr 46px;
+  grid-template-columns: 1fr 46px 46px;
   gap: 8px;
   padding: 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -775,6 +902,10 @@ label {
   .meeting-status {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .floating-reactions {
+    inset: 92px 14px 110px 14px;
   }
 }
 
@@ -824,9 +955,53 @@ label {
 
   .control-bar {
     justify-content: stretch;
+    position: sticky;
+    bottom: 0;
+    z-index: 30;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(12, 13, 16, 0.94);
+    padding: 10px 0 0;
   }
 
   .control-bar button {
     flex: 1 1 76px;
+    min-height: 58px;
+  }
+
+  .side-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    max-height: 72vh;
+    transform: translateY(100%);
+    transition: transform 220ms ease;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    overflow: hidden;
+  }
+
+  .side-panel.open {
+    transform: translateY(0);
+  }
+
+  .side-panel.chat {
+    grid-template-rows: 0 minmax(320px, 72vh);
+  }
+
+  .side-panel.participants,
+  .side-panel.more {
+    grid-template-rows: minmax(320px, 72vh) 0;
+  }
+
+  .side-panel.chat .participants-panel,
+  .side-panel.participants .chat-panel,
+  .side-panel.more .chat-panel {
+    overflow: hidden;
+  }
+
+  .organizer-controls {
+    grid-template-columns: 1fr;
   }
 }

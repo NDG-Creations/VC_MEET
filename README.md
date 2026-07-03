@@ -234,3 +234,59 @@ CLIENT_ORIGIN=https://meetconnect.vercel.app
 - No paid APIs, SDKs, subscription services, or database are used.
 - For same-machine local tab testing, a TURN server is usually not required. For production or difficult networks, you may need to add a TURN server later.
 - Room state is kept in backend memory. Restarting the backend clears active rooms, which keeps the app simple and database-free.
+- Current WebRTC peer-to-peer version is best for 2-8 users. For 40-80 users, migrate to LiveKit/Jitsi/mediasoup SFU.
+
+## Production Testing Checklist
+
+Run these checks after every Vercel/Railway deploy:
+
+- Open the frontend Vercel URL and create a meeting.
+- Join from a second browser/device using the same meeting link.
+- Confirm local video is muted locally and remote audio plays from the other participant.
+- Toggle camera off/on and confirm other participants see the update without reconnecting.
+- Start screen share and confirm the warning appears before browser sharing selection.
+- Stop screen share and confirm Gallery View returns.
+- Use reactions and Raise Hand; confirm participants see them.
+- Organizer: test Mute All, lock/unlock, enable/disable chat, enable/disable participant screen sharing, remove participant, make/remove admin, and end meeting.
+- Chat: confirm sender name, time, emoji insertion, and system messages.
+- Mobile: confirm sticky bottom controls and bottom-sheet Participants/Chat panels.
+- Railway backend `/` should return `status: signaling server running`.
+
+## Push and Redeploy Commands
+
+Commit and push:
+
+```bash
+git status
+git add client server README.md
+git commit -m "Polish MeetConnect deployment UI and room controls"
+git push origin main
+```
+
+Vercel:
+
+```bash
+cd client
+npm run build
+```
+
+Then redeploy from the Vercel dashboard, or let Vercel auto-deploy from the pushed `main` branch.
+
+Railway:
+
+```bash
+cd server
+npm start
+```
+
+Then redeploy from the Railway dashboard, or let Railway auto-deploy from the pushed `main` branch.
+
+Keep these environment variables unchanged:
+
+```text
+Vercel frontend:
+VITE_SERVER_URL=https://your-railway-backend-url
+
+Railway backend:
+CLIENT_ORIGIN=https://your-vercel-frontend-url
+```
